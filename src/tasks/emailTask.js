@@ -9,6 +9,7 @@ function createMailTransport() {
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: process.env.SMTP_SECURE === "1",
+      family: 4,
       auth:
         process.env.SMTP_USER && process.env.SMTP_PASS
           ? {
