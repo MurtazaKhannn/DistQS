@@ -7,6 +7,9 @@ const { prisma, disconnectPrisma } = require("../db/client");
 const { truncateReason } = require("../services/jobService");
 const { logger } = require("../utils/logger");
 
+/** When set (e.g. Render Web Service), a minimal HTTP server satisfies platform health checks. */
+let healthServer;
+
 /**
  * Worker (consumer) — pulls jobs from Redis and runs task handlers asynchronously
  * (after the HTTP API has already responded to the client).
@@ -138,6 +141,28 @@ worker.on("failed", async (job, err) => {
   }
 });
 
+const portEnv = process.env.PORT;
+if (portEnv) {
+  const http = require("http");
+  const port = Number(portEnv);
+  healthServer = http.createServer((req, res) => {
+    const path = req.url.split("?")[0];
+    if (req.method === "GET" && (path === "/" || path === "/health")) {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  healthServer.listen(port, "0.0.0.0", () => {
+    logger.info(
+      { port, event: "worker_http_health_listen" },
+      "worker health HTTP listening"
+    );
+  });
+}
+
 logger.info(
   {
     event: "worker_listen",
@@ -149,6 +174,9 @@ logger.info(
 
 async function shutdown() {
   logger.info({ event: "worker_shutdown" }, "closing worker");
+  if (healthServer) {
+    await new Promise((resolve) => healthServer.close(resolve));
+  }
   await worker.close();
   await disconnectPrisma();
   process.exit(0);
