@@ -1,6 +1,6 @@
 # Distributed Task Processing — Phase 1 + Phase 2
 
-Phase 1 introduced **Express + BullMQ + Redis** (producer–consumer). Phase 2 adds **PostgreSQL + Prisma** for persistent job tracking, **Zod** validation, **BullMQ retries** with exponential backoff, **Pino** logging, **GET /jobs/:id**, a **task registry**, and **real** email (Nodemailer) and PDF (PDFKit) tasks.
+Phase 1 introduced **Express + BullMQ + Redis** (producer–consumer). Phase 2 adds **PostgreSQL + Prisma** for persistent job tracking, **Zod** validation, **BullMQ retries** with exponential backoff, **Pino** logging, **GET /jobs/:id**, a **task registry**, and **real** email (Brevo HTTPS, Nodemailer SMTP, or PDF (PDFKit) tasks.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ npm install
 cp .env.example .env
 ```
 
-Edit **`.env`**: set `DATABASE_URL` and optional Resend / SMTP / paths.
+Edit **`.env`**: set `DATABASE_URL` and optional Brevo / SMTP / paths.
 
 ## Infrastructure (Docker, no Compose)
 
@@ -76,14 +76,16 @@ Render’s **Background Worker** is paid. To run the consumer on a **free Web Se
 | Start | `npm run start:worker` |
 | `PORT` | Do **not** set manually — Render injects it. When `PORT` is set, the worker process also listens on `GET /` and `GET /health` for platform health checks. |
 
-Set the **same** environment variables on this service as you would on a real worker: `DATABASE_URL`, `REDIS_HOST`, `REDIS_PORT`, `NODE_ENV=production`, plus `MAIL_FROM`, `PDF_OUTPUT_DIR`, and either **`RESEND_API_KEY`** (recommended on free tier — see below) or **`SMTP_*`** if your plan allows outbound SMTP.
+Set the **same** environment variables on this service as you would on a real worker: `DATABASE_URL`, `REDIS_HOST`, `REDIS_PORT`, `NODE_ENV=production`, plus `MAIL_FROM`, `PDF_OUTPUT_DIR`, and either **`BREVO_API_KEY`** (recommended on free tier — see below) or **`SMTP_*`** if your plan allows outbound SMTP.
 
 **Email on Render free Web Services**
 
-Render blocks outbound **SMTP** ports (25, 465, 587) on free Web Services. Use **[Resend](https://resend.com)** (or similar) over **HTTPS** instead:
+Render blocks outbound **SMTP** ports (25, 465, 587) on free Web Services. Use **[Brevo](https://www.brevo.com/)** transactional email over **HTTPS** instead (see [Send a transactional email](https://developers.brevo.com/reference/sendtransacemail)):
 
-1. Create an API key and (for production) [verify a domain](https://resend.com/docs/dashboard/domains/introduction) in Resend.
-2. On the worker: set **`RESEND_API_KEY`**, set **`MAIL_FROM`** to a sender Resend allows, and **leave `SMTP_HOST` empty** so the app uses the Resend path.
+1. Create a [Brevo](https://app.brevo.com/) account, generate an **API key** (SMTP & API), and [verify a sender](https://help.brevo.com/hc/en-us) (single email or domain).
+2. On the worker: set **`BREVO_API_KEY`**, set **`MAIL_FROM`** to a verified Brevo sender (`email@domain.com` or `Name <email@domain.com>`), and **leave `SMTP_HOST` empty** so the app uses the Brevo path.
+
+**Migration from Resend:** remove **`RESEND_API_KEY`** from your environment, add **`BREVO_API_KEY`**, verify **`MAIL_FROM`** in Brevo, and redeploy the worker.
 
 **Caveats**
 
@@ -118,7 +120,7 @@ flowchart LR
 | [src/services/jobService.js](src/services/jobService.js) | DB row + enqueue; enqueue failure handling |
 | [src/validators/jobValidators.js](src/validators/jobValidators.js) | Zod schemas |
 | [src/tasks/index.js](src/tasks/index.js) | `taskRegistry` lookup |
-| [src/tasks/emailTask.js](src/tasks/emailTask.js) | Resend (HTTPS) or Nodemailer SMTP / jsonTransport |
+| [src/tasks/emailTask.js](src/tasks/emailTask.js) | Brevo (HTTPS) or Nodemailer SMTP / jsonTransport |
 | [src/tasks/pdfTask.js](src/tasks/pdfTask.js) | PDFKit → `output/` (or `PDF_OUTPUT_DIR`) |
 | [src/db/client.js](src/db/client.js) | `PrismaClient` singleton |
 | [src/utils/logger.js](src/utils/logger.js) | Pino (+ `pino-pretty` in dev) |
@@ -193,8 +195,8 @@ See [.env.example](.env.example). Highlights:
 
 - **`DATABASE_URL`** — Postgres connection string (Prisma).
 - **`REDIS_HOST`**, **`REDIS_PORT`** — BullMQ (defaults `127.0.0.1` / `6379`).
-- **`RESEND_API_KEY`**, **`MAIL_FROM`** — when `RESEND_API_KEY` is set, email is sent via [Resend’s API](https://resend.com/docs/api-reference/emails/send-email) (HTTPS). Omit for SMTP or local simulation.
-- **`SMTP_*`**, **`MAIL_FROM`** — real SMTP via Nodemailer when **`RESEND_API_KEY`** is unset and **`SMTP_HOST`** is set. If both are unset, Nodemailer uses **`jsonTransport`** (no network mail; good for local demos).
+- **`BREVO_API_KEY`**, **`MAIL_FROM`** — when `BREVO_API_KEY` is set, email is sent via [Brevo’s transactional API](https://developers.brevo.com/reference/sendtransacemail) (HTTPS). **`MAIL_FROM`** must match a sender verified in Brevo. Omit for SMTP or local simulation.
+- **`SMTP_*`**, **`MAIL_FROM`** — real SMTP via Nodemailer when **`BREVO_API_KEY`** is unset and **`SMTP_HOST`** is set. If both are unset, Nodemailer uses **`jsonTransport`** (no network mail; good for local demos).
 - **`PDF_OUTPUT_DIR`** — where PDFKit writes files (default `./output`).
 - **`LOG_LEVEL`**, **`LOG_PRETTY`** — Pino logging.
 
@@ -244,6 +246,3 @@ Kafka, Kubernetes, microservices, full distributed tracing, Docker Compose in-re
 ## License
 
 ISC (see `package.json`).
-#   D i s t Q S 
- 
- 

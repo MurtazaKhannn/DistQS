@@ -1,23 +1,59 @@
 const nodemailer = require("nodemailer");
 
-const RESEND_API_URL = "https://api.resend.com/emails";
+const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
+
+/** Loose check for a plausible email local@domain */
+function looksLikeEmail(s) {
+  return /^[^\s<>]+@[^\s<>]+\.[^\s<>]+$/.test(s);
+}
 
 /**
- * Send one email via Resend HTTP API (port 443). Use on hosts that block SMTP (e.g. Render free Web Services).
+ * Parse MAIL_FROM into display name + email for Brevo sender.
+ * Supports: "Name <email@domain.com>" or "email@domain.com"
  */
-async function sendViaResend({ from, to, subject, text }) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const res = await fetch(RESEND_API_URL, {
+function parseMailFrom(mailFrom) {
+  const raw = (mailFrom || "").trim();
+  if (!raw) {
+    throw new Error("MAIL_FROM is empty but BREVO_API_KEY is set");
+  }
+  const angle = /^(.+?)\s*<([^>]+)>$/.exec(raw);
+  if (angle) {
+    const name = angle[1].replace(/^["']|["']$/g, "").trim();
+    const email = angle[2].trim();
+    if (!looksLikeEmail(email)) {
+      throw new Error(`MAIL_FROM has invalid email inside brackets: ${email}`);
+    }
+    return { name: name || undefined, email };
+  }
+  if (looksLikeEmail(raw)) {
+    return { name: undefined, email: raw };
+  }
+  throw new Error(
+    `MAIL_FROM must be "email@domain.com" or "Name <email@domain.com>"; got: ${raw.slice(0, 80)}`
+  );
+}
+
+/**
+ * Send one email via Brevo HTTP API (port 443). Use on hosts that block SMTP (e.g. Render free Web Services).
+ */
+async function sendViaBrevo({ senderName, senderEmail, to, subject, text }) {
+  const apiKey = process.env.BREVO_API_KEY;
+  const sender = { email: senderEmail };
+  if (senderName) {
+    sender.name = senderName;
+  }
+
+  const res = await fetch(BREVO_API_URL, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      "api-key": apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from,
-      to,
+      sender,
+      to: [{ email: to }],
       subject,
-      text,
+      textContent: text,
     }),
   });
 
@@ -33,7 +69,7 @@ async function sendViaResend({ from, to, subject, text }) {
   }
 
   if (!res.ok) {
-    throw new Error(`Resend ${res.status}: ${bodySnippet}`);
+    throw new Error(`Brevo ${res.status}: ${bodySnippet}`);
   }
 
   let data;
@@ -68,16 +104,18 @@ function createMailTransport() {
 }
 
 /**
- * Email task — Resend (HTTPS) if RESEND_API_KEY; else Nodemailer SMTP; else jsonTransport (local demo).
+ * Email task — Brevo (HTTPS) if BREVO_API_KEY; else Nodemailer SMTP; else jsonTransport (local demo).
  */
 async function runEmailTask(payload, ctx) {
   const { logger } = ctx;
-  const from = process.env.MAIL_FROM || "noreply@localhost";
+  const fromRaw = process.env.MAIL_FROM || "noreply@localhost";
   const text = payload.text || `Automated message: ${payload.subject}`;
 
-  if (process.env.RESEND_API_KEY) {
-    const data = await sendViaResend({
-      from,
+  if (process.env.BREVO_API_KEY) {
+    const { name, email } = parseMailFrom(fromRaw);
+    const data = await sendViaBrevo({
+      senderName: name,
+      senderEmail: email,
       to: payload.to,
       subject: payload.subject,
       text,
@@ -85,8 +123,8 @@ async function runEmailTask(payload, ctx) {
     logger.info(
       {
         event: "email_sent",
-        provider: "resend",
-        resendId: data.id || null,
+        provider: "brevo",
+        messageId: data.messageId != null ? String(data.messageId) : null,
       },
       "Email sent"
     );
@@ -95,7 +133,7 @@ async function runEmailTask(payload, ctx) {
 
   const transport = createMailTransport();
   const info = await transport.sendMail({
-    from,
+    from: fromRaw,
     to: payload.to,
     subject: payload.subject,
     text,
@@ -106,7 +144,7 @@ async function runEmailTask(payload, ctx) {
   } else {
     logger.info(
       { event: "email_simulated", preview: info.message },
-      "Email sent (jsonTransport — set RESEND_API_KEY or SMTP_* for real delivery)"
+      "Email sent (jsonTransport — set BREVO_API_KEY or SMTP_* for real delivery)"
     );
   }
 }
