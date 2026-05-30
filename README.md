@@ -14,7 +14,7 @@ npm install
 cp .env.example .env
 ```
 
-Edit **`.env`**: set `DATABASE_URL` and optional SMTP / paths.
+Edit **`.env`**: set `DATABASE_URL` and optional Resend / SMTP / paths.
 
 ## Infrastructure (Docker, no Compose)
 
@@ -76,7 +76,14 @@ Render’s **Background Worker** is paid. To run the consumer on a **free Web Se
 | Start | `npm run start:worker` |
 | `PORT` | Do **not** set manually — Render injects it. When `PORT` is set, the worker process also listens on `GET /` and `GET /health` for platform health checks. |
 
-Set the **same** environment variables on this service as you would on a real worker: `DATABASE_URL`, `REDIS_HOST`, `REDIS_PORT`, `NODE_ENV=production`, plus `SMTP_*`, `MAIL_FROM`, and `PDF_OUTPUT_DIR` if you use email/PDF tasks.
+Set the **same** environment variables on this service as you would on a real worker: `DATABASE_URL`, `REDIS_HOST`, `REDIS_PORT`, `NODE_ENV=production`, plus `MAIL_FROM`, `PDF_OUTPUT_DIR`, and either **`RESEND_API_KEY`** (recommended on free tier — see below) or **`SMTP_*`** if your plan allows outbound SMTP.
+
+**Email on Render free Web Services**
+
+Render blocks outbound **SMTP** ports (25, 465, 587) on free Web Services. Use **[Resend](https://resend.com)** (or similar) over **HTTPS** instead:
+
+1. Create an API key and (for production) [verify a domain](https://resend.com/docs/dashboard/domains/introduction) in Resend.
+2. On the worker: set **`RESEND_API_KEY`**, set **`MAIL_FROM`** to a sender Resend allows, and **leave `SMTP_HOST` empty** so the app uses the Resend path.
 
 **Caveats**
 
@@ -111,7 +118,7 @@ flowchart LR
 | [src/services/jobService.js](src/services/jobService.js) | DB row + enqueue; enqueue failure handling |
 | [src/validators/jobValidators.js](src/validators/jobValidators.js) | Zod schemas |
 | [src/tasks/index.js](src/tasks/index.js) | `taskRegistry` lookup |
-| [src/tasks/emailTask.js](src/tasks/emailTask.js) | Nodemailer |
+| [src/tasks/emailTask.js](src/tasks/emailTask.js) | Resend (HTTPS) or Nodemailer SMTP / jsonTransport |
 | [src/tasks/pdfTask.js](src/tasks/pdfTask.js) | PDFKit → `output/` (or `PDF_OUTPUT_DIR`) |
 | [src/db/client.js](src/db/client.js) | `PrismaClient` singleton |
 | [src/utils/logger.js](src/utils/logger.js) | Pino (+ `pino-pretty` in dev) |
@@ -186,7 +193,8 @@ See [.env.example](.env.example). Highlights:
 
 - **`DATABASE_URL`** — Postgres connection string (Prisma).
 - **`REDIS_HOST`**, **`REDIS_PORT`** — BullMQ (defaults `127.0.0.1` / `6379`).
-- **`SMTP_*`**, **`MAIL_FROM`** — real SMTP. If **`SMTP_HOST`** is unset, Nodemailer uses **`jsonTransport`** (no network mail; good for local demos).
+- **`RESEND_API_KEY`**, **`MAIL_FROM`** — when `RESEND_API_KEY` is set, email is sent via [Resend’s API](https://resend.com/docs/api-reference/emails/send-email) (HTTPS). Omit for SMTP or local simulation.
+- **`SMTP_*`**, **`MAIL_FROM`** — real SMTP via Nodemailer when **`RESEND_API_KEY`** is unset and **`SMTP_HOST`** is set. If both are unset, Nodemailer uses **`jsonTransport`** (no network mail; good for local demos).
 - **`PDF_OUTPUT_DIR`** — where PDFKit writes files (default `./output`).
 - **`LOG_LEVEL`**, **`LOG_PRETTY`** — Pino logging.
 
