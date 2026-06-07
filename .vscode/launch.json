@@ -1,0 +1,55 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug API — Express (jobs.js / Postman)",
+      "program": "${workspaceFolder}/src/index.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug API (nodemon) — Express",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/nodemon/bin/nodemon.js",
+      "program": "${workspaceFolder}/src/index.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "restart": true,
+      "skipFiles": ["<node_internals>/**"],
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Worker — BullMQ only (not jobs.js)",
+      "program": "${workspaceFolder}/src/worker.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"],
+      "envFile": "${workspaceFolder}/.env"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug API + Worker",
+      "configurations": [
+        "Debug API — Express (jobs.js / Postman)",
+        "Debug Worker — BullMQ only (not jobs.js)"
+      ],
+      "stopAll": true,
+      "presentation": {
+        "hidden": false,
+        "group": "fullstack",
+        "order": 1
+      }
+    }
+  ]
+}

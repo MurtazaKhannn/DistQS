@@ -11,7 +11,7 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "test": "node --test ./test/validators.test.js ./test/integration.test.js",
+    "test": "node --test ./test/validators.test.js ./test/apiAuth.test.js ./test/integration.test.js",
     "stress": "node scripts/stress-enqueue.js"
   },
   "keywords": [],
@@ -23,6 +23,7 @@
     "bullmq": "^5.77.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
     "ioredis": "^5.10.1",
     "nodemailer": "^8.0.8",
     "pdfkit": "^0.18.0",

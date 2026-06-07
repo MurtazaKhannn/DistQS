@@ -2,12 +2,17 @@ const express = require("express");
 const { postJobBodySchema, formatZodError } = require("../../validators/jobValidators");
 const { createQueuedJob, getJobById } = require("../../services/jobService");
 const { logger } = require("../../utils/logger");
+const { requireJwtAuth } = require("../middleware/requireJwtAuth");
 
 const router = express.Router();
 
+router.use(requireJwtAuth);
+
 router.post("/jobs", async (req, res) => {
   const parsed = postJobBodySchema.safeParse(req.body);
-  logger.info({ parsed }, "Parsed body");
+  if (parsed.success) {
+    logger.debug({ type: parsed.data.type, event: "job_post_validated" }, "POST /jobs");
+  }
   if (!parsed.success) {
     return res.status(400).json({
       success: false,

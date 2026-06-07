@@ -1,6 +1,6 @@
-# Distributed Task Processing — Phase 1 + Phase 2
+# Distributed Task Processing — Phase 1 + Phase 2 + Phase 3
 
-Phase 1 introduced **Express + BullMQ + Redis** (producer–consumer). Phase 2 adds **PostgreSQL + Prisma** for persistent job tracking, **Zod** validation, **BullMQ retries** with exponential backoff, **Pino** logging, **GET /jobs/:id**, a **task registry**, and **real** email (Brevo HTTPS, Nodemailer SMTP, or PDF (PDFKit) tasks.
+Phase 1 introduced **Express + BullMQ + Redis** (producer–consumer). Phase 2 adds **PostgreSQL + Prisma** for persistent job tracking, **Zod** validation, **BullMQ retries** with exponential backoff, **Pino** logging, **GET /jobs/:id**, a **task registry**, and **real** email (Brevo HTTPS, Nodemailer SMTP, or PDF (PDFKit) tasks). Phase 3 adds **JWT access tokens** for **`/jobs`**: clients call **`POST /auth/token`** with `Authorization: Bearer <JOB_API_BEARER_TOKEN>` (exchange secret, constant-time compare), receive a short-lived JWT signed with **`JWT_SECRET`**, then send **`Authorization: Bearer <jwt>`** on **`POST /jobs`** and **`GET /jobs/:id`**. In production the API exits on startup if **`JOB_API_BEARER_TOKEN`** or **`JWT_SECRET`** is unset.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ npm install
 cp .env.example .env
 ```
 
-Edit **`.env`**: set `DATABASE_URL` and optional Brevo / SMTP / paths.
+Edit **`.env`**: set `DATABASE_URL`, **`JOB_API_BEARER_TOKEN`**, **`JWT_SECRET`**, and optional Brevo / SMTP / paths.
 
 ## Infrastructure (Docker, no Compose)
 
@@ -78,6 +78,8 @@ Render’s **Background Worker** is paid. To run the consumer on a **free Web Se
 
 Set the **same** environment variables on this service as you would on a real worker: `DATABASE_URL`, `REDIS_HOST`, `REDIS_PORT`, `NODE_ENV=production`, plus `MAIL_FROM`, `PDF_OUTPUT_DIR`, and either **`BREVO_API_KEY`** (recommended on free tier — see below) or **`SMTP_*`** if your plan allows outbound SMTP.
 
+On the **API** Web Service only, set **`JOB_API_BEARER_TOKEN`** (exchange secret) and **`JWT_SECRET`** (signing key), same as locally. The **worker** does not need these — it never exposes the HTTP job routes.
+
 **Email on Render free Web Services**
 
 Render blocks outbound **SMTP** ports (25, 465, 587) on free Web Services. Use **[Brevo](https://www.brevo.com/)** transactional email over **HTTPS** instead (see [Send a transactional email](https://developers.brevo.com/reference/sendtransacemail)):
@@ -114,7 +116,11 @@ flowchart LR
 |------|------|
 | [src/api/app.js](src/api/app.js) | Express app + JSON body parser |
 | [src/api/server.js](src/api/server.js) | HTTP listen + graceful shutdown |
+| [src/api/routes/auth.js](src/api/routes/auth.js) | `POST /auth/token` (exchange secret for JWT) |
 | [src/api/routes/jobs.js](src/api/routes/jobs.js) | `POST /jobs`, `GET /jobs/:id` |
+| [src/api/middleware/requireJwtAuth.js](src/api/middleware/requireJwtAuth.js) | JWT verification for `/jobs` routes |
+| [src/api/middleware/bearerTokenUtils.js](src/api/middleware/bearerTokenUtils.js) | Parse `Bearer`, timing-safe compare, exchange secret helper |
+| [src/api/utils/jwtAccessToken.js](src/api/utils/jwtAccessToken.js) | Sign and verify access JWTs (HS256) |
 | [src/queues/taskQueue.js](src/queues/taskQueue.js) | BullMQ `Queue`, Redis connection, **default retries** |
 | [src/workers/worker.js](src/workers/worker.js) | BullMQ `Worker`, DB status updates, Pino |
 | [src/services/jobService.js](src/services/jobService.js) | DB row + enqueue; enqueue failure handling |
@@ -129,17 +135,62 @@ Entrypoints: [src/index.js](src/index.js) (API), [src/worker.js](src/worker.js) 
 
 ## End-to-end flow
 
-1. Client → `POST /jobs`.
-2. API → **Zod** validates `type` + `payload`.
-3. **JobService** → insert **`jobs`** row (`queued`).
-4. **BullMQ** `queue.add` → Redis (`task-queue`); row updated with **`queueJobId`**.
-5. API responds with **`id`** (database id), **`queueJobId`**, `status: queued`.
-6. Worker → job **`active`** in DB; runs **`taskRegistry[job.name]`**.
-7. Success → DB `completed` + `completedAt`. Retries → DB `retrying` + `failureReason`; final failure → `failed` + `completedAt`.
+1. Client → `POST /auth/token` with `Authorization: Bearer <JOB_API_BEARER_TOKEN>` → receives **`access_token`** (JWT).
+2. Client → `POST /jobs` with `Authorization: Bearer <access_token>`.
+3. API → **Zod** validates `type` + `payload`.
+4. **JobService** → insert **`jobs`** row (`queued`).
+5. BullMQ `queue.add` → Redis (`task-queue`); row updated with **`queueJobId`**.
+6. API responds with **`id`** (database id), **`queueJobId`**, `status: queued`.
+7. Worker → job **`active`** in DB; runs **`taskRegistry[job.name]`**.
+8. Success → DB `completed` + `completedAt`. Retries → DB `retrying` + `failureReason`; final failure → `failed` + `completedAt`.
 
 BullMQ **defaultJobOptions**: `attempts: 3`, `backoff: { type: "exponential", delay: 2000 }`.
 
 ## API
+
+### `POST /auth/token`
+
+Exchange the long-lived **client secret** for a short-lived **JWT** (HS256, signed with **`JWT_SECRET`**).
+
+```http
+Authorization: Bearer <JOB_API_BEARER_TOKEN>
+```
+
+No JSON body required. **200** response:
+
+```json
+{
+  "access_token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+**401** if the exchange secret is missing, wrong, or malformed `Authorization`. **503** if **`JWT_SECRET`** is not configured on the server.
+
+### `/jobs` routes (JWT)
+
+All **`POST /jobs`** and **`GET /jobs/:id`** requests require:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+Use the **`access_token`** from **`POST /auth/token`**. The raw **`JOB_API_BEARER_TOKEN`** must **not** be sent on `/jobs` (it will fail JWT verification with **401**).
+
+If the header is missing, malformed, or the JWT is invalid/expired, the API responds with **401** and `{ "success": false, "error": "Unauthorized" }`.
+
+Example (mint token, then enqueue):
+
+```bash
+TOKEN=$(curl -sS -X POST "http://localhost:3000/auth/token" \
+  -H "Authorization: Bearer $JOB_API_BEARER_TOKEN" | jq -r .access_token)
+
+curl -sS -X POST "http://localhost:3000/jobs" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"pdf","payload":{"title":"Demo"}}'
+```
 
 ### `POST /jobs`
 
@@ -187,12 +238,15 @@ BullMQ **defaultJobOptions**: `attempts: 3`, `backoff: { type: "exponential", de
 
 ### `GET /jobs/:id`
 
-Returns `status`, `attempts`, `payload`, `failureReason`, timestamps, `queueJobId`, `type`. **404** if unknown id.
+Same **`Authorization: Bearer <access_token>`** header as `POST /jobs`. Returns `status`, `attempts`, `payload`, `failureReason`, timestamps, `queueJobId`, `type`. **404** if unknown id.
 
 ## Environment
 
 See [.env.example](.env.example). Highlights:
 
+- **`JOB_API_BEARER_TOKEN`** — long-lived **exchange secret**. Send only on **`POST /auth/token`** as `Authorization: Bearer <token>` (constant-time compare). **Do not** use this value as the Bearer token on **`/jobs`**.
+- **`JWT_SECRET`** — server-only HMAC key used to **sign and verify** access JWTs. Required with the exchange secret for real use. In **`NODE_ENV=production`**, the API **exits** on startup if **`JWT_SECRET`** or **`JOB_API_BEARER_TOKEN`** is missing. Set on the **API** service only (not on the worker).
+- **`JWT_EXPIRES_IN`** (optional) — passed to `jsonwebtoken` (e.g. `1h`, `3600`). Defaults to **`1h`** if unset.
 - **`DATABASE_URL`** — Postgres connection string (Prisma).
 - **`REDIS_HOST`**, **`REDIS_PORT`** — BullMQ (defaults `127.0.0.1` / `6379`).
 - **`BREVO_API_KEY`**, **`MAIL_FROM`** — when `BREVO_API_KEY` is set, email is sent via [Brevo’s transactional API](https://developers.brevo.com/reference/sendtransacemail) (HTTPS). **`MAIL_FROM`** must match a sender verified in Brevo. Omit for SMTP or local simulation.
@@ -211,14 +265,35 @@ See [.env.example](.env.example). Highlights:
 | `npm run db:generate` | Prisma generate |
 | `npm run db:studio` | Prisma Studio |
 | `npm test` | Unit + (optional) integration tests |
-| `npm run stress` | Example stress script (`node scripts/stress-enqueue.js [count] [url]`) |
+| `npm run stress` | Stress script — `POST /auth/token` with **`JOB_API_BEARER_TOKEN`**, then **`POST /jobs`** with returned JWT (`node scripts/stress-enqueue.js [count] [url]`) |
 
 ## Tests
 
 - **Unit:** Zod validators (`test/validators.test.js`).
-- **Integration:** `RUN_INTEGRATION=1 npm test` — hits real Postgres + Redis + `POST`/`GET` (lazy-loaded so default `npm test` does not open Redis).
+- **Integration:** `RUN_INTEGRATION=1 npm test` — hits real Postgres + Redis; mints JWT via **`POST /auth/token`** then **`POST`/`GET /jobs`**. Ensure **`JOB_API_BEARER_TOKEN`** and **`JWT_SECRET`** are set in `.env` or rely on test defaults.
+- **API auth:** `test/apiAuth.test.js` — exchange + JWT + **`/jobs`** without Postgres.
 
 Skip integration: `SKIP_INTEGRATION=1`.
+
+## Debugging (VS Code / Cursor)
+
+**Important:** Breakpoints in **[`src/api/routes/jobs.js`](src/api/routes/jobs.js)** only run in the **API** process (**`src/index.js`** → Express). The **worker** (**`src/worker.js`**) runs BullMQ consumers and **never loads** `jobs.js`. If you start **Debug Worker** (or your terminal shows `node … worker.js`) and send Postman to `/jobs`, breakpoints in `jobs.js` will **never** hit — use **Debug API — Express (jobs.js / Postman)** for that file.
+
+Use **[.vscode/launch.json](.vscode/launch.json)**:
+
+1. **Debug API — Express (jobs.js / Postman)** — use this for `POST /jobs` / `GET /jobs/:id` breakpoints and Postman.
+2. **Debug API (nodemon) — Express** — same as above with reload on save.
+3. **Debug Worker — BullMQ only (not jobs.js)** — for worker / task handlers under [`src/tasks/`](src/tasks/), not for Express routes.
+
+**Breakpoints on routes:**
+
+- Set a **line breakpoint** (red dot in the gutter). Exception-only breakpoints do not stop on normal HTTP.
+- With **Debug API + Worker**, pick the **API** session in the Call Stack dropdown for `jobs.js` breakpoints.
+- The `POST` handler runs **after** `requireJwtAuth` — send **`Authorization: Bearer <access_token>`** from **`POST /auth/token`**, or set breakpoints in [`requireJwtAuth.js`](src/api/middleware/requireJwtAuth.js) / [`auth.js`](src/api/routes/auth.js) first.
+
+**`injected env (0) from .env`:** dotenv often logs this when variables were already set (e.g. by launch `envFile`); not necessarily a broken `.env`.
+
+If the process exits with code **1**, check the **integrated terminal** for the first error line.
 
 ## Manual error-recovery matrix
 
@@ -227,6 +302,7 @@ Skip integration: `SKIP_INTEGRATION=1`.
 | Redis down | Start Redis container; re-run API/worker. |
 | Postgres down | Start Postgres; `npm run db:migrate`. |
 | Invalid body | Expect **400** + Zod `details` from `POST /jobs`. |
+| Missing or wrong JWT on `/jobs` | Expect **401** + `Unauthorized` on `POST /jobs` and `GET /jobs/:id`. Mint a new token with **`POST /auth/token`** if expired. |
 | Handler always throws | Watch DB **`retrying`** then **`failed`**; BullMQ retries (3×, exponential backoff). |
 | Worker killed mid-job | Restart worker; BullMQ **stall** recovery may re-deliver — handlers should be **retry-safe** where side effects matter. |
 | Multiple workers | Run two `npm run worker` terminals; jobs distribute across workers (competing consumers). |
